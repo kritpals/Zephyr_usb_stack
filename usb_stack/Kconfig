@@ -1,0 +1,271 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# USB Stack for Zephyr OS with DWC3 Synopsys M31 and Qualcomm PHY Support
+# Copyright (c) 2025
+
+menuconfig USB_STACK
+	bool "USB Stack with DWC3 and Qualcomm PHY Support"
+	depends on USB_DEVICE
+	help
+	  Enable the USB stack with DWC3 Synopsys M31 controller and
+	  Qualcomm PHY support for device mode operation.
+
+if USB_STACK
+
+config USB_STACK_LOG_LEVEL
+	int "USB Stack Log Level"
+	default 2
+	range 0 4
+	help
+	  Set the log level for the USB stack:
+	  0 - No logging
+	  1 - Errors only
+	  2 - Warnings and errors
+	  3 - Info, warnings, and errors
+	  4 - Debug, info, warnings, and errors
+
+config USB_STACK_INIT_PRIORITY
+	int "USB Stack Initialization Priority"
+	default 80
+	range 0 99
+	help
+	  Initialization priority for the USB stack. Should be after
+	  basic system initialization but before application init.
+
+config USB_STACK_THREAD_PRIORITY
+	int "USB Stack Thread Priority"
+	default 4
+	range 0 15
+	help
+	  Priority for USB stack worker threads. Lower numbers indicate
+	  higher priority.
+
+config USB_STACK_THREAD_STACK_SIZE
+	int "USB Stack Thread Stack Size"
+	default 2048
+	range 1024 8192
+	help
+	  Stack size for USB stack worker threads in bytes.
+
+config USB_STACK_MAX_ENDPOINTS
+	int "Maximum Number of Endpoints"
+	default 16
+	range 4 32
+	help
+	  Maximum number of endpoints supported by the USB stack.
+	  This includes both IN and OUT endpoints.
+
+config USB_STACK_CTRL_BUF_SIZE
+	int "Control Transfer Buffer Size"
+	default 512
+	range 64 1024
+	help
+	  Buffer size for control transfers in bytes.
+
+config USB_STACK_BULK_BUF_SIZE
+	int "Bulk Transfer Buffer Size"
+	default 1024
+	range 64 4096
+	help
+	  Buffer size for bulk transfers in bytes.
+
+config USB_STACK_DMA_SUPPORT
+	bool "DMA Support"
+	default y
+	help
+	  Enable DMA support for USB transfers. This improves
+	  performance but requires DMA-coherent memory allocation.
+
+config USB_STACK_PM_SUPPORT
+	bool "Power Management Support"
+	default y
+	help
+	  Enable power management features including suspend/resume
+	  and remote wakeup capabilities.
+
+# Hardware Layer Configuration
+
+config USB_STACK_DWC3_CONTROLLER
+	bool "DWC3 Synopsys M31 Controller Support"
+	default y
+	help
+	  Enable support for DWC3 Synopsys M31 USB controller.
+	  This provides the hardware interface for USB operations.
+
+if USB_STACK_DWC3_CONTROLLER
+
+config USB_STACK_DWC3_EVENT_BUFFER_SIZE
+	int "DWC3 Event Buffer Size"
+	default 4096
+	range 1024 8192
+	help
+	  Size of the DWC3 event buffer in bytes. This buffer
+	  stores hardware events for processing.
+
+config USB_STACK_DWC3_TRB_POOL_SIZE
+	int "DWC3 TRB Pool Size"
+	default 256
+	range 64 512
+	help
+	  Number of Transfer Request Blocks (TRBs) in the pool
+	  for each endpoint.
+
+endif # USB_STACK_DWC3_CONTROLLER
+
+# PHY Layer Configuration
+
+config USB_STACK_QCOM_PHY
+	bool "Qualcomm PHY Support"
+	default y
+	help
+	  Enable support for Qualcomm USB PHYs including QUSB2
+	  and QMP PHYs for USB 2.0 and 3.0+ operation.
+
+if USB_STACK_QCOM_PHY
+
+config USB_STACK_QUSB2_PHY
+	bool "QUSB2 PHY Support"
+	default y
+	help
+	  Enable support for Qualcomm QUSB2 PHY for USB 2.0
+	  high-speed operation.
+
+config USB_STACK_QMP_PHY
+	bool "QMP PHY Support"
+	default y
+	help
+	  Enable support for Qualcomm QMP PHY for USB 3.0
+	  SuperSpeed operation.
+
+config USB_STACK_PHY_CALIBRATION
+	bool "PHY Calibration Support"
+	default y
+	help
+	  Enable PHY calibration routines for optimal signal
+	  integrity and performance.
+
+endif # USB_STACK_QCOM_PHY
+
+# Type-C Configuration
+
+config USB_STACK_TYPEC_SUPPORT
+	bool "USB Type-C Support"
+	default y
+	help
+	  Enable USB Type-C connector support including CC line
+	  detection, orientation sensing, and power delivery.
+
+if USB_STACK_TYPEC_SUPPORT
+
+config USB_STACK_TYPEC_PD_SUPPORT
+	bool "USB Power Delivery Support"
+	default y
+	help
+	  Enable USB Power Delivery (PD) protocol support for
+	  negotiating power contracts over Type-C.
+
+config USB_STACK_TYPEC_ORIENTATION_DETECTION
+	bool "Type-C Orientation Detection"
+	default y
+	help
+	  Enable automatic detection of Type-C connector
+	  orientation (CC1 vs CC2).
+
+config USB_STACK_TYPEC_ROLE_SWAP
+	bool "Type-C Role Swap Support"
+	default n
+	help
+	  Enable support for USB Type-C role swapping between
+	  source and sink modes.
+
+endif # USB_STACK_TYPEC_SUPPORT
+
+# Device Core Configuration
+
+config USB_STACK_DEVICE_CORE
+	bool "USB Device Core"
+	default y
+	help
+	  Enable the USB device core layer that handles standard
+	  USB device operations and state management.
+
+# Function Driver Configuration
+
+config USB_STACK_FUNCTION_DRIVER
+	bool "USB Function Driver Layer"
+	default y
+	help
+	  Enable the USB function driver layer that provides
+	  endpoint management and transfer handling.
+
+# Adaptation Layer Configuration
+
+config USB_STACK_ADAPTATION
+	bool "USB Adaptation Layer"
+	default y
+	help
+	  Enable the USB adaptation layer that provides class
+	  driver interfaces and protocol handling.
+
+# Application Layer Configuration
+
+config USB_STACK_SERIAL
+	bool "USB Serial Communication"
+	default y
+	select USB_STACK_DEVICE_CORE
+	select USB_STACK_FUNCTION_DRIVER
+	select USB_STACK_ADAPTATION
+	help
+	  Enable USB serial communication using CDC ACM class.
+	  This provides a virtual serial port over USB.
+
+if USB_STACK_SERIAL
+
+config USB_STACK_SERIAL_RX_BUF_SIZE
+	int "Serial RX Buffer Size"
+	default 512
+	range 64 2048
+	help
+	  Size of the receive buffer for USB serial communication.
+
+config USB_STACK_SERIAL_TX_BUF_SIZE
+	int "Serial TX Buffer Size"
+	default 512
+	range 64 2048
+	help
+	  Size of the transmit buffer for USB serial communication.
+
+config USB_STACK_SERIAL_NOTIFY_BUF_SIZE
+	int "Serial Notification Buffer Size"
+	default 64
+	range 32 128
+	help
+	  Size of the notification buffer for USB serial status.
+
+endif # USB_STACK_SERIAL
+
+# Debug and Testing Configuration
+
+config USB_STACK_DEBUG
+	bool "USB Stack Debug Support"
+	default n
+	help
+	  Enable additional debugging features including detailed
+	  logging and runtime statistics collection.
+
+config USB_STACK_STATISTICS
+	bool "USB Stack Statistics"
+	default y
+	help
+	  Enable collection of USB stack statistics including
+	  transfer counts, error rates, and performance metrics.
+
+config USB_STACK_SHELL
+	bool "USB Stack Shell Commands"
+	depends on SHELL
+	default n
+	help
+	  Enable shell commands for USB stack debugging and
+	  runtime configuration.
+
+endif # USB_STACK
