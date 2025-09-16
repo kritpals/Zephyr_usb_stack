@@ -1,19 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # USB Stack for Zephyr OS with DWC3 Synopsys M31 and Qualcomm PHY Support
 # Copyright (c) 2025
 
-cmake_minimum_required(VERSION 3.20.0)
-
-# Add subdirectories for different layers
-add_subdirectory(hardware)
-add_subdirectory(controller)
-add_subdirectory(device_core)
-add_subdirectory(function_driver)
-add_subdirectory(adaptation)
-add_subdirectory(application)
-add_subdirectory(phy)
-add_subdirectory(typec)
-
-# Main USB stack library
 zephyr_library()
 
 # Include directories
@@ -29,14 +18,47 @@ zephyr_include_directories(
     typec/include
 )
 
-# Source files
+# Core USB stack sources
 zephyr_library_sources(
-    src/usb_stack_init.c
     src/usb_stack_core.c
+    src/usb_stack_init.c
+)
+# Hardware layer
+zephyr_library_sources_ifdef(CONFIG_USB_STACK_DWC3_CONTROLLER
+    controller/dwc3_controller.c
+)
+# PHY layer
+zephyr_library_sources_ifdef(CONFIG_USB_STACK_QCOM_PHY
+    phy/qcom_phy.c
+)
+# Qualcomm PHY components
+zephyr_library_sources_ifdef(CONFIG_USB_STACK_QCOM_RETIMER
+    phy/qcom_retimer.c
+)
+zephyr_library_sources_ifdef(CONFIG_USB_STACK_QCOM_REDRIVER
+    phy/qcom_redriver.c
+)
+zephyr_library_sources_ifdef(CONFIG_USB_STACK_QCOM_REPEATER
+    phy/qcom_repeater.c
 )
 
-# Configuration options
-zephyr_library_sources_ifdef(CONFIG_USB_DEVICE_STACK src/usb_device_stack.c)
-zephyr_library_sources_ifdef(CONFIG_USB_DWC3_CONTROLLER controller/dwc3_controller.c)
-zephyr_library_sources_ifdef(CONFIG_USB_QCOM_PHY phy/qcom_phy.c)
-zephyr_library_sources_ifdef(CONFIG_USB_TYPEC_SUPPORT typec/typec_manager.c)
+# Type-C support
+zephyr_library_sources_ifdef(CONFIG_USB_STACK_TYPEC_SUPPORT
+    typec/typec_manager.c
+)
+# Application layer
+zephyr_library_sources_ifdef(CONFIG_USB_STACK_SERIAL
+    application/usb_serial.c
+)
+# Device core layer
+zephyr_library_sources_ifdef(CONFIG_USB_STACK_DEVICE_CORE
+    device_core/usb_device_core.c
+)
+# Function driver layer
+zephyr_library_sources_ifdef(CONFIG_USB_STACK_FUNCTION_DRIVER
+    function_driver/usb_function_driver.c
+)
+# Adaptation layer
+zephyr_library_sources_ifdef(CONFIG_USB_STACK_ADAPTATION
+    adaptation/usb_adaptation.c
+)

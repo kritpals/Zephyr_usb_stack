@@ -12,6 +12,9 @@
 
 #include "../include/usb_stack.h"
 
+/* USB GET_STATUS response bits for endpoints */
+#define USB_GET_STATUS_ENDPOINT_HALT    BIT(0)
+
 LOG_MODULE_REGISTER(usb_stack_core, CONFIG_USB_STACK_LOG_LEVEL);
 
 /* Global USB stack instance */
@@ -274,7 +277,7 @@ static int usb_stack_handle_standard_setup(struct usb_stack_device *dev, struct 
         /* Feature handling for endpoints, interfaces, device */
         if (setup->RequestType.recipient == USB_REQTYPE_RECIPIENT_ENDPOINT) {
             uint8_t ep_addr = setup->wIndex & 0xFF;
-            if (setup->wValue == USB_FSEL_ENDPOINT_HALT) {
+            if (setup->wValue == USB_SFS_ENDPOINT_HALT) {
                 if (setup->bRequest == USB_SREQ_SET_FEATURE) {
                     return usb_stack_stall_endpoint(dev, ep_addr);
                 } else {

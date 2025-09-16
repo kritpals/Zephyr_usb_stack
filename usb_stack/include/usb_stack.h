@@ -331,8 +331,10 @@ void usb_stack_reset_statistics(struct usb_stack_device *dev);
  */
 
 /* Logging macros */
+#define CONFIG_USB_STACK_LOG_LEVEL LOG_LEVEL_DBG
+
 #define USB_STACK_LOG_MODULE_NAME usb_stack
-LOG_MODULE_DECLARE(USB_STACK_LOG_MODULE_NAME, CONFIG_USB_STACK_LOG_LEVEL);
+//LOG_MODULE_DECLARE(USB_STACK_LOG_MODULE_NAME, CONFIG_USB_STACK_LOG_LEVEL);
 
 #define USB_STACK_LOG_ERR(...) LOG_ERR(__VA_ARGS__)
 #define USB_STACK_LOG_WRN(...) LOG_WRN(__VA_ARGS__)

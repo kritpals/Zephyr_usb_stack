@@ -144,6 +144,24 @@ config USB_STACK_PHY_CALIBRATION
 	  Enable PHY calibration routines for optimal signal
 	  integrity and performance.
 
+config USB_STACK_QCOM_RETIMER
+	bool "Qualcomm USB Retimer Support"
+	default y
+	help
+	  Enable support for Qualcomm USB retimers for signal
+	  conditioning and orientation management.
+config USB_STACK_QCOM_REDRIVER
+	bool "Qualcomm USB Redriver Support"
+	default y
+	help
+	  Enable support for Qualcomm USB redrivers for signal
+	  amplification and equalization.
+config USB_STACK_QCOM_REPEATER
+	bool "Qualcomm USB Repeater Support"
+	default y
+	help
+	  Enable support for Qualcomm USB repeaters for signal
+	  regeneration and clock data recovery.
 endif # USB_STACK_QCOM_PHY
 
 # Type-C Configuration
