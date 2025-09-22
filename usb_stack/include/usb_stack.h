@@ -327,6 +327,22 @@ void usb_stack_get_statistics(struct usb_stack_device *dev,
 void usb_stack_reset_statistics(struct usb_stack_device *dev);
 
 /**
+ * @brief Runtime configuration update
+ * 
+ * @param new_config New configuration to apply
+ * @return USB_STACK_SUCCESS on success, error code otherwise
+ */
+int usb_stack_update_config(const struct usb_stack_device_config *new_config);
+
+/**
+ * @brief Get current USB stack configuration
+ * 
+ * @param config Pointer to store current configuration
+ * @return USB_STACK_SUCCESS on success, error code otherwise
+ */
+int usb_stack_get_config(struct usb_stack_device_config *config);
+
+/**
  * @}
  */
 

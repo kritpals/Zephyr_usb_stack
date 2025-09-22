@@ -82,6 +82,7 @@ struct typec_manager_data {
     /* Callbacks */
     void (*connection_callback)(usb_stack_typec_state_t state, void *user_data);
     void *callback_user_data;
+    struct gpio_callback tcpc_callback;
     
     /* Synchronization */
     struct k_mutex lock;

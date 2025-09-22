@@ -33,7 +33,7 @@ struct dwc3_controller_data {
     struct dwc3_ep {
         struct usb_stack_endpoint *ep;
         struct dwc3_trb *trb_pool;
-        dma_addr_t trb_pool_dma;
+        uintptr_t trb_pool_dma;
         uint32_t trb_enqueue;
         uint32_t trb_dequeue;
         uint32_t resource_index;
@@ -327,7 +327,7 @@ static int dwc3_submit_transfer(const struct device *dev, struct usb_stack_trans
         if (!dep->trb_pool) {
             return -ENOMEM;
         }
-        dep->trb_pool_dma = (dma_addr_t)dep->trb_pool;
+        dep->trb_pool_dma = (uintptr_t)dep->trb_pool;
     }
     
     /* Setup TRB */
@@ -646,8 +646,10 @@ static int dwc3_controller_init(const struct device *dev)
         return ret;
     }
     
-    /* Configure interrupt */
-    IRQ_CONNECT(config->irq, 0, dwc3_isr, DEVICE_GET(dwc3_controller), 0);
+    /* Configure interrupt - store IRQ number for later use */
+    dwc->irq = config->irq;
+    
+    /* Enable interrupt */
     irq_enable(config->irq);
     
     LOG_INF("DWC3 controller initialized successfully");

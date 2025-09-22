@@ -10,6 +10,7 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/usb/usb_ch9.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/byteorder.h>
 #include <string.h>
 
 #include "../include/usb_stack.h"
@@ -18,8 +19,13 @@ LOG_MODULE_REGISTER(usb_serial, CONFIG_USB_STACK_LOG_LEVEL);
 
 /* USB CDC Class Codes */
 #define USB_CDC_CLASS                   0x02
+#define USB_CDC_DATA_CLASS              0x0A
 #define USB_CDC_SUBCLASS_ACM            0x02
 #define USB_CDC_PROTOCOL_AT             0x01
+
+/* USB Endpoint Types */
+#define USB_DC_EP_BULK                  0x02
+#define USB_DC_EP_INTERRUPT             0x03
 
 /* CDC Functional Descriptors */
 #define USB_CDC_FUNC_DESC_HEADER        0x00
@@ -114,14 +120,14 @@ struct usb_serial_data {
 static struct usb_device_descriptor device_descriptor = {
     .bLength = sizeof(struct usb_device_descriptor),
     .bDescriptorType = USB_DESC_DEVICE,
-    .bcdUSB = sys_cpu_to_le16(0x0200),  /* USB 2.0 */
+    .bcdUSB = 0x0002,  /* USB 2.0 (little-endian) */
     .bDeviceClass = USB_CDC_CLASS,
     .bDeviceSubClass = 0,
     .bDeviceProtocol = 0,
     .bMaxPacketSize0 = 64,
-    .idVendor = sys_cpu_to_le16(0x1234),
-    .idProduct = sys_cpu_to_le16(0x5678),
-    .bcdDevice = sys_cpu_to_le16(0x0100),
+    .idVendor = 0x3412,  /* 0x1234 in little-endian */
+    .idProduct = 0x7856,  /* 0x5678 in little-endian */
+    .bcdDevice = 0x0001,  /* 0x0100 in little-endian */
     .iManufacturer = 1,
     .iProduct = 2,
     .iSerialNumber = 3,
@@ -184,7 +190,7 @@ static struct usb_cdc_config_descriptor config_descriptor = {
     .config = {
         .bLength = sizeof(struct usb_cfg_descriptor),
         .bDescriptorType = USB_DESC_CONFIGURATION,
-        .wTotalLength = sys_cpu_to_le16(sizeof(struct usb_cdc_config_descriptor)),
+        .wTotalLength = sizeof(struct usb_cdc_config_descriptor),  /* Will be converted at runtime */
         .bNumInterfaces = 2,
         .bConfigurationValue = 1,
         .iConfiguration = 0,
@@ -208,7 +214,7 @@ static struct usb_cdc_config_descriptor config_descriptor = {
         .bLength = 5,
         .bDescriptorType = USB_DESC_CS_INTERFACE,
         .bDescriptorSubType = USB_CDC_FUNC_DESC_HEADER,
-        .bcdCDC = sys_cpu_to_le16(0x0110),
+        .bcdCDC = 0x1001,  /* 0x0110 in little-endian */
     },
     
     .cdc_call_mgmt = {
@@ -239,7 +245,7 @@ static struct usb_cdc_config_descriptor config_descriptor = {
         .bDescriptorType = USB_DESC_ENDPOINT,
         .bEndpointAddress = 0x82,  /* IN endpoint 2 */
         .bmAttributes = USB_DC_EP_INTERRUPT,
-        .wMaxPacketSize = sys_cpu_to_le16(64),
+        .wMaxPacketSize = 64,  /* Will be converted at runtime */
         .bInterval = 10,
     },
     
@@ -260,7 +266,7 @@ static struct usb_cdc_config_descriptor config_descriptor = {
         .bDescriptorType = USB_DESC_ENDPOINT,
         .bEndpointAddress = 0x01,  /* OUT endpoint 1 */
         .bmAttributes = USB_DC_EP_BULK,
-        .wMaxPacketSize = sys_cpu_to_le16(512),
+        .wMaxPacketSize = 512,  /* Will be converted at runtime */
         .bInterval = 0,
     },
     
@@ -269,61 +275,54 @@ static struct usb_cdc_config_descriptor config_descriptor = {
         .bDescriptorType = USB_DESC_ENDPOINT,
         .bEndpointAddress = 0x81,  /* IN endpoint 1 */
         .bmAttributes = USB_DC_EP_BULK,
-        .wMaxPacketSize = sys_cpu_to_le16(512),
+        .wMaxPacketSize = 512,  /* Will be converted at runtime */
         .bInterval = 0,
     },
 };
 
-/* String Descriptors */
+/* String Descriptors - using simple byte arrays to avoid compile-time constant issues */
+static uint8_t lang_descriptor_data[] = {
+    4, USB_DESC_STRING, 0x09, 0x04  /* English (US) - 0x0409 in little-endian */
+};
+
+static uint8_t manufacturer_descriptor_data[] = {
+    2 + 2 * 16, USB_DESC_STRING,  /* "Zephyr USB Stack" */
+    'Z', 0, 'e', 0, 'p', 0, 'h', 0, 'y', 0, 'r', 0, ' ', 0, 'U', 0,
+    'S', 0, 'B', 0, ' ', 0, 'S', 0, 't', 0, 'a', 0, 'c', 0, 'k', 0
+};
+
+static uint8_t product_descriptor_data[] = {
+    2 + 2 * 17, USB_DESC_STRING,  /* "USB Serial Device" */
+    'U', 0, 'S', 0, 'B', 0, ' ', 0, 'S', 0, 'e', 0, 'r', 0, 'i', 0,
+    'a', 0, 'l', 0, ' ', 0, 'D', 0, 'e', 0, 'v', 0, 'i', 0, 'c', 0, 'e', 0
+};
+
+static uint8_t serial_descriptor_data[] = {
+    2 + 2 * 12, USB_DESC_STRING,  /* "123456789ABC" */
+    '1', 0, '2', 0, '3', 0, '4', 0, '5', 0, '6', 0,
+    '7', 0, '8', 0, '9', 0, 'A', 0, 'B', 0, 'C', 0
+};
+
 static struct usb_string_descriptor lang_descriptor = {
     .bLength = 4,
     .bDescriptorType = USB_DESC_STRING,
-    .bString = sys_cpu_to_le16(0x0409),  /* English (US) */
+    .bString = 0x0904,  /* English (US) - 0x0409 in little-endian */
 };
 
-static struct usb_string_descriptor manufacturer_descriptor = {
-    .bLength = 2 + 2 * 16,  /* "Zephyr USB Stack" */
-    .bDescriptorType = USB_DESC_STRING,
-    .bString = {
-        sys_cpu_to_le16('Z'), sys_cpu_to_le16('e'), sys_cpu_to_le16('p'),
-        sys_cpu_to_le16('h'), sys_cpu_to_le16('y'), sys_cpu_to_le16('r'),
-        sys_cpu_to_le16(' '), sys_cpu_to_le16('U'), sys_cpu_to_le16('S'),
-        sys_cpu_to_le16('B'), sys_cpu_to_le16(' '), sys_cpu_to_le16('S'),
-        sys_cpu_to_le16('t'), sys_cpu_to_le16('a'), sys_cpu_to_le16('c'),
-        sys_cpu_to_le16('k'),
-    },
-};
+static struct usb_string_descriptor *manufacturer_descriptor = (struct usb_string_descriptor *)manufacturer_descriptor_data;
+static struct usb_string_descriptor *product_descriptor = (struct usb_string_descriptor *)product_descriptor_data;
+static struct usb_string_descriptor *serial_descriptor = (struct usb_string_descriptor *)serial_descriptor_data;
 
-static struct usb_string_descriptor product_descriptor = {
-    .bLength = 2 + 2 * 18,  /* "USB Serial Device" */
-    .bDescriptorType = USB_DESC_STRING,
-    .bString = {
-        sys_cpu_to_le16('U'), sys_cpu_to_le16('S'), sys_cpu_to_le16('B'),
-        sys_cpu_to_le16(' '), sys_cpu_to_le16('S'), sys_cpu_to_le16('e'),
-        sys_cpu_to_le16('r'), sys_cpu_to_le16('i'), sys_cpu_to_le16('a'),
-        sys_cpu_to_le16('l'), sys_cpu_to_le16(' '), sys_cpu_to_le16('D'),
-        sys_cpu_to_le16('e'), sys_cpu_to_le16('v'), sys_cpu_to_le16('i'),
-        sys_cpu_to_le16('c'), sys_cpu_to_le16('e'),
-    },
-};
+static struct usb_string_descriptor *string_descriptors[4];
 
-static struct usb_string_descriptor serial_descriptor = {
-    .bLength = 2 + 2 * 12,  /* "123456789ABC" */
-    .bDescriptorType = USB_DESC_STRING,
-    .bString = {
-        sys_cpu_to_le16('1'), sys_cpu_to_le16('2'), sys_cpu_to_le16('3'),
-        sys_cpu_to_le16('4'), sys_cpu_to_le16('5'), sys_cpu_to_le16('6'),
-        sys_cpu_to_le16('7'), sys_cpu_to_le16('8'), sys_cpu_to_le16('9'),
-        sys_cpu_to_le16('A'), sys_cpu_to_le16('B'), sys_cpu_to_le16('C'),
-    },
-};
-
-static struct usb_string_descriptor *string_descriptors[] = {
-    &lang_descriptor,
-    &manufacturer_descriptor,
-    &product_descriptor,
-    &serial_descriptor,
-};
+/* Initialize string descriptors at runtime */
+static void init_string_descriptors(void)
+{
+    string_descriptors[0] = &lang_descriptor;
+    string_descriptors[1] = manufacturer_descriptor;
+    string_descriptors[2] = product_descriptor;
+    string_descriptors[3] = serial_descriptor;
+}
 
 /* Transfer completion callbacks */
 static void usb_serial_rx_complete(struct usb_stack_transfer *transfer)
@@ -536,6 +535,9 @@ int usb_serial_init(struct usb_serial_data *serial)
     k_mutex_init(&serial->tx_mutex);
     k_fifo_init(&serial->rx_fifo);
     k_fifo_init(&serial->tx_fifo);
+    
+    /* Initialize string descriptors */
+    init_string_descriptors();
     
     /* Configure USB device */
     struct usb_stack_device_config usb_config = {

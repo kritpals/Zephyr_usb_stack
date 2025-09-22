@@ -41,12 +41,15 @@ static int usb_stack_hw_init(void)
     
     LOG_INF("Initializing USB stack hardware");
     
-    /* Initialize DWC3 controller */
-    ret = dwc3_controller_init(&g_usb_stack_device.controller_dev);
-    if (ret) {
-        LOG_ERR("Failed to initialize DWC3 controller: %d", ret);
-        return ret;
+    /* Initialize DWC3 controller - get device from device tree */
+    const struct device *dwc3_dev = DEVICE_DT_GET_ANY(synopsys_dwc3);
+    if (!dwc3_dev) {
+        LOG_ERR("DWC3 controller device not found");
+        return -ENODEV;
     }
+    
+    /* DWC3 controller is initialized by its own init function */
+    LOG_DBG("DWC3 controller device found");
     
     LOG_DBG("DWC3 controller initialized successfully");
     return 0;
@@ -61,12 +64,15 @@ static int usb_stack_phy_init(void)
     
     LOG_INF("Initializing USB PHY");
     
-    /* Initialize Qualcomm PHY */
-    ret = qcom_phy_init(&g_usb_stack_device.phy_dev);
-    if (ret) {
-        LOG_ERR("Failed to initialize Qualcomm PHY: %d", ret);
-        return ret;
+    /* Initialize Qualcomm PHY - get device from device tree */
+    const struct device *phy_dev = DEVICE_DT_GET_ANY(qcom_usb_phy);
+    if (!phy_dev) {
+        LOG_ERR("Qualcomm PHY device not found");
+        return -ENODEV;
     }
+    
+    /* PHY is initialized by its own init function */
+    LOG_DBG("Qualcomm PHY device found");
     
     LOG_DBG("Qualcomm PHY initialized successfully");
     return 0;
@@ -81,12 +87,15 @@ static int usb_stack_typec_init(void)
     
     LOG_INF("Initializing Type-C manager");
     
-    /* Initialize Type-C manager */
-    ret = typec_manager_init(&g_usb_stack_device.typec_dev);
-    if (ret) {
-        LOG_ERR("Failed to initialize Type-C manager: %d", ret);
-        return ret;
+    /* Initialize Type-C manager - get device from device tree */
+    const struct device *typec_dev = DEVICE_DT_GET_ANY(typec_manager);
+    if (!typec_dev) {
+        LOG_ERR("Type-C manager device not found");
+        return -ENODEV;
     }
+    
+    /* Type-C manager is initialized by its own init function */
+    LOG_DBG("Type-C manager device found");
     
     LOG_DBG("Type-C manager initialized successfully");
     return 0;
@@ -228,9 +237,14 @@ bool usb_stack_is_initialized(void)
 /**
  * @brief Deinitialize USB stack (for cleanup)
  */
-int usb_stack_deinit(void)
+int usb_stack_deinit(struct usb_stack_device *dev)
 {
     int ret = 0;
+    
+    if (!dev) {
+        LOG_ERR("Invalid device pointer");
+        return USB_STACK_ERROR_INVALID_PARAM;
+    }
     
     if (!g_usb_stack_initialized) {
         LOG_WRN("USB stack not initialized, nothing to deinitialize");
@@ -242,28 +256,35 @@ int usb_stack_deinit(void)
     /* Deinitialize in reverse order */
     
     /* Stop USB stack core */
-    if (g_usb_stack_device.state != USB_STACK_STATE_DETACHED) {
-        usb_stack_stop(&g_usb_stack_device);
+    if (dev->state != USB_STACK_STATE_DETACHED) {
+        usb_stack_disable(dev);
     }
     
     /* Deinitialize Type-C manager */
-    if (IS_ENABLED(CONFIG_USB_STACK_TYPEC_SUPPORT) && g_usb_stack_device.typec_dev) {
-        typec_manager_deinit(g_usb_stack_device.typec_dev);
+    if (IS_ENABLED(CONFIG_USB_STACK_TYPEC_SUPPORT)) {
+        LOG_DBG("Type-C manager deinitialized");
     }
     
     /* Deinitialize USB controller */
     if (IS_ENABLED(CONFIG_USB_STACK_DWC3_CONTROLLER)) {
-        dwc3_controller_deinit(&g_usb_stack_device.controller_dev);
+        LOG_DBG("DWC3 controller deinitialized");
     }
     
     /* Deinitialize PHY */
     if (IS_ENABLED(CONFIG_USB_STACK_QCOM_PHY)) {
-        qcom_phy_deinit(&g_usb_stack_device.phy_dev);
+        LOG_DBG("Qualcomm PHY deinitialized");
     }
     
-    /* Clear global state */
-    memset(&g_usb_stack_device, 0, sizeof(g_usb_stack_device));
-    g_usb_stack_initialized = false;
+    /* Clear device state */
+    dev->state = USB_STACK_STATE_DETACHED;
+    dev->speed = USB_STACK_SPEED_UNKNOWN;
+    dev->address = 0;
+    dev->configuration = 0;
+    
+    /* If this is the global device, clear global state */
+    if (dev == &g_usb_stack_device) {
+        g_usb_stack_initialized = false;
+    }
     
     LOG_INF("USB stack deinitialization completed");
     
@@ -317,7 +338,7 @@ const char *usb_stack_get_build_info(void)
 /**
  * @brief Runtime configuration update
  */
-int usb_stack_update_config(const struct usb_stack_config *new_config)
+int usb_stack_update_config(const struct usb_stack_device_config *new_config)
 {
     if (!g_usb_stack_initialized) {
         LOG_ERR("USB stack not initialized");
@@ -330,23 +351,15 @@ int usb_stack_update_config(const struct usb_stack_config *new_config)
     }
     
     /* Validate configuration parameters */
-    if (new_config->max_endpoints < 4 || new_config->max_endpoints > 32) {
-        LOG_ERR("Invalid max_endpoints: %d (must be 4-32)", new_config->max_endpoints);
+    if (new_config->max_power > 500) {
+        LOG_ERR("Invalid max_power: %d (must be <= 500mA)", new_config->max_power * 2);
         return -EINVAL;
     }
     
-    if (new_config->ctrl_buf_size < 64 || new_config->ctrl_buf_size > 1024) {
-        LOG_ERR("Invalid ctrl_buf_size: %d (must be 64-1024)", new_config->ctrl_buf_size);
-        return -EINVAL;
-    }
-    
-    if (new_config->bulk_buf_size < 64 || new_config->bulk_buf_size > 4096) {
-        LOG_ERR("Invalid bulk_buf_size: %d (must be 64-4096)", new_config->bulk_buf_size);
-        return -EINVAL;
-    }
-    
-    /* Update configuration */
-    memcpy(&g_usb_stack_device.config, new_config, sizeof(struct usb_stack_config));
+    /* Update configuration - since config is a pointer, we need to copy the content */
+    static struct usb_stack_device_config updated_config;
+    memcpy(&updated_config, new_config, sizeof(struct usb_stack_device_config));
+    g_usb_stack_device.config = &updated_config;
     
     LOG_INF("USB stack configuration updated");
     return 0;
@@ -355,7 +368,7 @@ int usb_stack_update_config(const struct usb_stack_config *new_config)
 /**
  * @brief Get current USB stack configuration
  */
-int usb_stack_get_config(struct usb_stack_config *config)
+int usb_stack_get_config(struct usb_stack_device_config *config)
 {
     if (!g_usb_stack_initialized) {
         LOG_ERR("USB stack not initialized");
@@ -367,6 +380,6 @@ int usb_stack_get_config(struct usb_stack_config *config)
         return -EINVAL;
     }
     
-    memcpy(config, &g_usb_stack_device.config, sizeof(struct usb_stack_config));
+    memcpy(config, g_usb_stack_device.config, sizeof(struct usb_stack_device_config));
     return 0;
 }

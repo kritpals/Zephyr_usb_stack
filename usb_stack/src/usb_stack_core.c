@@ -377,33 +377,6 @@ int usb_stack_init(struct usb_stack_device *dev, const struct usb_stack_device_c
     return USB_STACK_SUCCESS;
 }
 
-int usb_stack_deinit(struct usb_stack_device *dev)
-{
-    if (!dev) {
-        return USB_STACK_ERROR_INVALID_PARAM;
-    }
-    
-    LOG_INF("Deinitializing USB stack");
-    
-    /* Disable device */
-    usb_stack_disable(dev);
-    
-    /* Cancel all work */
-    k_work_cancel(&dev->event_work);
-    
-    /* Reset state */
-    dev->state = USB_STACK_STATE_DETACHED;
-    dev->speed = USB_STACK_SPEED_UNKNOWN;
-    dev->address = 0;
-    dev->configuration = 0;
-    
-    /* Clear global instance */
-    if (g_usb_stack_device == dev) {
-        g_usb_stack_device = NULL;
-    }
-    
-    return USB_STACK_SUCCESS;
-}
 
 int usb_stack_enable(struct usb_stack_device *dev)
 {

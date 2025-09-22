@@ -181,6 +181,24 @@ extern "C" {
 #define DWC3_DEPCMD_SETTRANSFRESOURCE   (0x02)
 #define DWC3_DEPCMD_SETEPCONFIG         (0x01)
 
+/* Endpoint Configuration Parameters */
+#define DWC3_DEPCFG_EP_TYPE_MASK        GENMASK(2, 1)
+#define DWC3_DEPCFG_EP_TYPE(n)          ((n) << 1)
+#define DWC3_DEPCFG_MAX_PACKET_SIZE_MASK GENMASK(26, 16)
+#define DWC3_DEPCFG_MAX_PACKET_SIZE(n)  ((n) << 16)
+#define DWC3_DEPCFG_EP_NUMBER_MASK      GENMASK(7, 4)
+#define DWC3_DEPCFG_EP_NUMBER(n)        ((n) << 4)
+#define DWC3_DEPCFG_FIFO_NUMBER_MASK    GENMASK(21, 17)
+#define DWC3_DEPCFG_FIFO_NUMBER(n)      ((n) << 17)
+#define DWC3_DEPCFG_XFER_COMPLETE_EN    BIT(8)
+#define DWC3_DEPCFG_XFER_NOT_READY_EN   BIT(9)
+
+/* Event Buffer Registers */
+#define DWC3_GEVNTADRLO(n)              (0xC400 + (n * 0x10))
+#define DWC3_GEVNTADRHI(n)              (0xC404 + (n * 0x10))
+#define DWC3_GEVNTSIZ(n)                (0xC408 + (n * 0x10))
+#define DWC3_GEVNTCOUNT(n)              (0xC40C + (n * 0x10))
+
 /* Device Event Enable Register (DEVTEN) */
 #define DWC3_DEVTEN_VNDRDEVTSTRCVEDEN   BIT(12)
 #define DWC3_DEVTEN_EVNTOVERFLOWEN      BIT(11)
@@ -280,7 +298,7 @@ struct dwc3_event_buffer {
     unsigned int count;
     unsigned int flags;
 #define DWC3_EVENT_PENDING      BIT(0)
-    dma_addr_t dma;
+    uintptr_t dma;
     struct dwc3 *dwc;
 };
 

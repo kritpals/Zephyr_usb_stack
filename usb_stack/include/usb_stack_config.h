@@ -50,11 +50,19 @@ extern "C" {
 #define USB_STACK_INT_EP_COUNT     4
 #define USB_STACK_ISO_EP_COUNT     2
 
+/* Interface Configuration */
+#define USB_STACK_MAX_INTERFACES   8
+#define USB_STACK_MAX_ALT_SETTINGS 4
+
 /* Buffer Configuration */
 #define USB_STACK_CTRL_BUF_SIZE    512
 #define USB_STACK_BULK_BUF_SIZE    1024
 #define USB_STACK_INT_BUF_SIZE     64
 #define USB_STACK_ISO_BUF_SIZE     1024
+
+/* Transfer Configuration */
+#define USB_STACK_MAX_CONCURRENT_TRANSFERS  32
+#define USB_STACK_MAX_TRANSFER_SIZE         65536
 
 /* DMA Configuration */
 #define USB_STACK_DMA_SUPPORT      1
@@ -75,6 +83,13 @@ extern "C" {
 #define USB_STACK_ENUM_TIMEOUT_MS  5000
 #define USB_STACK_XFER_TIMEOUT_MS  1000
 #define USB_STACK_RESET_TIMEOUT_MS 100
+
+/* Zephyr Configuration Constants */
+//#define CONFIG_USB_STACK_LOG_LEVEL         LOG_LEVEL_INF
+#define CONFIG_USB_STACK_INIT_PRIORITY     50
+#define CONFIG_USB_STACK_QCOM_PHY          1
+#define CONFIG_USB_STACK_DWC3_CONTROLLER   1
+#define CONFIG_USB_STACK_TYPEC_SUPPORT     1
 
 #ifdef __cplusplus
 }

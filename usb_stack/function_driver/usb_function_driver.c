@@ -26,33 +26,21 @@ int usb_function_driver_init(struct usb_stack_device *dev)
     
     LOG_INF("Initializing USB function driver");
     
-    /* Initialize function driver state */
-    dev->function_driver.active_transfers = 0;
-    dev->function_driver.max_transfers = USB_STACK_MAX_CONCURRENT_TRANSFERS;
+    /* Initialize device mutex and semaphore if not already done */
+    k_mutex_init(&dev->device_mutex);
+    k_sem_init(&dev->init_sem, 0, 1);
     
-    /* Initialize transfer pool */
-    for (int i = 0; i < USB_STACK_MAX_CONCURRENT_TRANSFERS; i++) {
-        dev->function_driver.transfer_pool[i].in_use = false;
-        dev->function_driver.transfer_pool[i].ep_addr = 0;
-        dev->function_driver.transfer_pool[i].buffer = NULL;
-        dev->function_driver.transfer_pool[i].length = 0;
-        dev->function_driver.transfer_pool[i].transferred = 0;
-        dev->function_driver.transfer_pool[i].status = USB_TRANSFER_STATUS_IDLE;
-        dev->function_driver.transfer_pool[i].callback = NULL;
-        dev->function_driver.transfer_pool[i].user_data = NULL;
-    }
+    /* Initialize event work and queue if not already done */
+    k_work_init(&dev->event_work, NULL);  /* Will be set by event handler */
+    k_msgq_init(&dev->event_queue, dev->event_buffer, sizeof(usb_stack_event_type_t), 16);
     
-    /* Initialize endpoint transfer queues */
-    for (int i = 0; i < USB_STACK_MAX_ENDPOINTS; i++) {
-        sys_slist_init(&dev->function_driver.ep_transfer_queues[i]);
-    }
-    
-    /* Initialize work queue for transfer processing */
-    k_work_queue_init(&dev->function_driver.transfer_work_queue);
-    k_work_queue_start(&dev->function_driver.transfer_work_queue,
-                      dev->function_driver.transfer_work_stack,
-                      K_THREAD_STACK_SIZEOF(dev->function_driver.transfer_work_stack),
-                      CONFIG_USB_STACK_THREAD_PRIORITY, NULL);
+    /* Reset statistics */
+    dev->reset_count = 0;
+    dev->suspend_count = 0;
+    dev->resume_count = 0;
+    dev->setup_count = 0;
+    dev->transfer_count = 0;
+    dev->error_count = 0;
     
     LOG_DBG("USB function driver initialized successfully");
     return 0;
@@ -70,50 +58,57 @@ int usb_function_driver_deinit(struct usb_stack_device *dev)
     
     LOG_INF("Deinitializing USB function driver");
     
-    /* Cancel all active transfers */
-    for (int i = 0; i < USB_STACK_MAX_CONCURRENT_TRANSFERS; i++) {
-        if (dev->function_driver.transfer_pool[i].in_use) {
-            usb_function_driver_cancel_transfer(dev, &dev->function_driver.transfer_pool[i]);
+    /* Cancel all active transfers on all endpoints */
+    for (int i = 0; i < USB_STACK_MAX_ENDPOINTS * 2; i++) {
+        struct usb_stack_endpoint *ep = &dev->endpoints[i];
+        if (ep->enabled) {
+            /* Cancel any pending transfers on this endpoint */
+            sys_dnode_t *node, *next;
+            SYS_DLIST_FOR_EACH_NODE_SAFE(&ep->transfer_queue, node, next) {
+                struct usb_stack_transfer *transfer = CONTAINER_OF(node, struct usb_stack_transfer, node);
+                transfer->status = USB_STACK_TRANSFER_CANCELLED;
+                sys_dlist_remove(node);
+            }
         }
     }
     
-    /* Reset function driver state */
-    memset(&dev->function_driver, 0, sizeof(dev->function_driver));
+    /* Reset statistics */
+    dev->transfer_count = 0;
+    dev->error_count = 0;
     
     LOG_DBG("USB function driver deinitialized");
     return 0;
 }
 
 /**
- * @brief Allocate a transfer from the pool
+ * @brief Allocate a transfer from the stack
  */
-static struct usb_transfer *allocate_transfer(struct usb_stack_device *dev)
+static struct usb_stack_transfer *allocate_transfer(struct usb_stack_device *dev)
 {
-    for (int i = 0; i < USB_STACK_MAX_CONCURRENT_TRANSFERS; i++) {
-        if (!dev->function_driver.transfer_pool[i].in_use) {
-            struct usb_transfer *transfer = &dev->function_driver.transfer_pool[i];
-            memset(transfer, 0, sizeof(*transfer));
-            transfer->in_use = true;
-            dev->function_driver.active_transfers++;
-            return transfer;
-        }
+    /* Use the stack's built-in transfer allocation */
+    struct usb_stack_transfer *transfer = k_malloc(sizeof(struct usb_stack_transfer));
+    if (!transfer) {
+        LOG_WRN("No memory for transfer allocation");
+        return NULL;
     }
     
-    LOG_WRN("No free transfers available");
-    return NULL;
+    memset(transfer, 0, sizeof(*transfer));
+    k_sem_init(&transfer->completion_sem, 0, 1);
+    transfer->status = USB_STACK_TRANSFER_IDLE;
+    
+    return transfer;
 }
 
 /**
- * @brief Free a transfer back to the pool
+ * @brief Free a transfer back to the system
  */
-static void free_transfer(struct usb_stack_device *dev, struct usb_transfer *transfer)
+static void free_transfer(struct usb_stack_device *dev, struct usb_stack_transfer *transfer)
 {
-    if (!transfer || !transfer->in_use) {
+    if (!transfer) {
         return;
     }
     
-    transfer->in_use = false;
-    dev->function_driver.active_transfers--;
+    k_free(transfer);
 }
 
 /**
@@ -123,7 +118,7 @@ int usb_function_driver_submit_transfer(struct usb_stack_device *dev,
                                        uint8_t ep_addr,
                                        uint8_t *buffer,
                                        size_t length,
-                                       usb_transfer_callback_t callback,
+                                       usb_stack_transfer_callback_t callback,
                                        void *user_data)
 {
     if (!dev || !buffer) {
@@ -131,77 +126,85 @@ int usb_function_driver_submit_transfer(struct usb_stack_device *dev,
         return -EINVAL;
     }
     
-    uint8_t ep_num = ep_addr & 0x0F;
-    if (ep_num >= USB_STACK_MAX_ENDPOINTS) {
-        LOG_ERR("Invalid endpoint number: %d", ep_num);
+    uint8_t ep_index = USB_STACK_EP_INDEX(ep_addr);
+    if (ep_index >= USB_STACK_MAX_ENDPOINTS * 2) {
+        LOG_ERR("Invalid endpoint index: %d", ep_index);
         return -EINVAL;
     }
     
     /* Allocate transfer */
-    struct usb_transfer *transfer = allocate_transfer(dev);
+    struct usb_stack_transfer *transfer = allocate_transfer(dev);
     if (!transfer) {
         LOG_ERR("Failed to allocate transfer");
         return -ENOMEM;
     }
     
     /* Initialize transfer */
-    transfer->ep_addr = ep_addr;
+    transfer->endpoint = ep_addr;
     transfer->buffer = buffer;
     transfer->length = length;
-    transfer->transferred = 0;
-    transfer->status = USB_TRANSFER_STATUS_PENDING;
+    transfer->actual_length = 0;
+    transfer->status = USB_STACK_TRANSFER_PENDING;
     transfer->callback = callback;
     transfer->user_data = user_data;
     
-    LOG_DBG("Submitting transfer: EP%d %s, length=%d",
-            ep_num, (ep_addr & 0x80) ? "IN" : "OUT", length);
+    LOG_DBG("Submitting transfer: EP 0x%02x, length=%d", ep_addr, length);
     
     /* Add to endpoint queue */
-    sys_slist_append(&dev->function_driver.ep_transfer_queues[ep_num], &transfer->node);
+    struct usb_stack_endpoint *ep = &dev->endpoints[ep_index];
+    k_mutex_lock(&ep->queue_mutex, K_FOREVER);
+    sys_dlist_append(&ep->transfer_queue, &transfer->node);
+    k_mutex_unlock(&ep->queue_mutex);
     
-    /* Submit to hardware */
-    int ret = dwc3_controller_submit_transfer(&dev->controller, transfer);
+    /* Submit to USB stack */
+    int ret = usb_stack_submit_transfer(dev, transfer);
     if (ret) {
-        LOG_ERR("Failed to submit transfer to hardware: %d", ret);
-        sys_slist_find_and_remove(&dev->function_driver.ep_transfer_queues[ep_num], &transfer->node);
+        LOG_ERR("Failed to submit transfer to USB stack: %d", ret);
+        k_mutex_lock(&ep->queue_mutex, K_FOREVER);
+        sys_dlist_remove(&transfer->node);
+        k_mutex_unlock(&ep->queue_mutex);
         free_transfer(dev, transfer);
         return ret;
     }
     
+    dev->transfer_count++;
     return 0;
 }
 
 /**
  * @brief Cancel a USB transfer
  */
-int usb_function_driver_cancel_transfer(struct usb_stack_device *dev, struct usb_transfer *transfer)
+int usb_function_driver_cancel_transfer(struct usb_stack_device *dev, struct usb_stack_transfer *transfer)
 {
     if (!dev || !transfer) {
         LOG_ERR("Invalid parameters");
         return -EINVAL;
     }
     
-    if (!transfer->in_use) {
-        LOG_WRN("Transfer not in use");
+    if (transfer->status == USB_STACK_TRANSFER_IDLE) {
+        LOG_WRN("Transfer not active");
         return -EINVAL;
     }
     
-    LOG_DBG("Cancelling transfer: EP%d", transfer->ep_addr & 0x0F);
+    LOG_DBG("Cancelling transfer: EP 0x%02x", transfer->endpoint);
     
-    /* Cancel in hardware */
-    int ret = dwc3_controller_cancel_transfer(&dev->controller, transfer);
+    /* Cancel in USB stack */
+    int ret = usb_stack_cancel_transfer(dev, transfer);
     if (ret) {
-        LOG_WRN("Failed to cancel transfer in hardware: %d", ret);
+        LOG_WRN("Failed to cancel transfer in USB stack: %d", ret);
     }
     
     /* Remove from queue */
-    uint8_t ep_num = transfer->ep_addr & 0x0F;
-    sys_slist_find_and_remove(&dev->function_driver.ep_transfer_queues[ep_num], &transfer->node);
+    uint8_t ep_index = USB_STACK_EP_INDEX(transfer->endpoint);
+    struct usb_stack_endpoint *ep = &dev->endpoints[ep_index];
+    k_mutex_lock(&ep->queue_mutex, K_FOREVER);
+    sys_dlist_remove(&transfer->node);
+    k_mutex_unlock(&ep->queue_mutex);
     
     /* Update status and call callback */
-    transfer->status = USB_TRANSFER_STATUS_CANCELLED;
+    transfer->status = USB_STACK_TRANSFER_CANCELLED;
     if (transfer->callback) {
-        transfer->callback(transfer, transfer->user_data);
+        transfer->callback(transfer);
     }
     
     /* Free transfer */
@@ -211,38 +214,11 @@ int usb_function_driver_cancel_transfer(struct usb_stack_device *dev, struct usb
 }
 
 /**
- * @brief Transfer completion work handler
- */
-static void transfer_completion_work_handler(struct k_work *work)
-{
-    struct usb_transfer *transfer = CONTAINER_OF(work, struct usb_transfer, completion_work);
-    
-    LOG_DBG("Transfer completed: EP%d, status=%d, transferred=%d",
-            transfer->ep_addr & 0x0F, transfer->status, transfer->transferred);
-    
-    /* Call completion callback */
-    if (transfer->callback) {
-        transfer->callback(transfer, transfer->user_data);
-    }
-    
-    /* Find the device (this is a bit hacky, but works for now) */
-    struct usb_stack_device *dev = usb_stack_get_device();
-    if (dev) {
-        /* Remove from queue */
-        uint8_t ep_num = transfer->ep_addr & 0x0F;
-        sys_slist_find_and_remove(&dev->function_driver.ep_transfer_queues[ep_num], &transfer->node);
-        
-        /* Free transfer */
-        free_transfer(dev, transfer);
-    }
-}
-
-/**
  * @brief Handle transfer completion (called from hardware layer)
  */
 void usb_function_driver_transfer_complete(struct usb_stack_device *dev,
-                                          struct usb_transfer *transfer,
-                                          usb_transfer_status_t status,
+                                          struct usb_stack_transfer *transfer,
+                                          usb_stack_transfer_status_t status,
                                           size_t transferred)
 {
     if (!dev || !transfer) {
@@ -250,13 +226,24 @@ void usb_function_driver_transfer_complete(struct usb_stack_device *dev,
         return;
     }
     
+    LOG_DBG("Transfer completed: EP 0x%02x, status=%d, transferred=%d",
+            transfer->endpoint, status, transferred);
+    
     /* Update transfer status */
     transfer->status = status;
-    transfer->transferred = transferred;
+    transfer->actual_length = transferred;
     
-    /* Schedule completion work */
-    k_work_init(&transfer->completion_work, transfer_completion_work_handler);
-    k_work_submit_to_queue(&dev->function_driver.transfer_work_queue, &transfer->completion_work);
+    /* Call completion callback */
+    if (transfer->callback) {
+        transfer->callback(transfer);
+    }
+    
+    /* Update statistics */
+    if (status == USB_STACK_TRANSFER_COMPLETE) {
+        dev->transfer_count++;
+    } else {
+        dev->error_count++;
+    }
 }
 
 /**
@@ -273,15 +260,26 @@ int usb_function_driver_get_statistics(struct usb_stack_device *dev,
     }
     
     if (active_transfers) {
-        *active_transfers = dev->function_driver.active_transfers;
+        /* Count active transfers across all endpoints */
+        uint32_t count = 0;
+        for (int i = 0; i < USB_STACK_MAX_ENDPOINTS * 2; i++) {
+            struct usb_stack_endpoint *ep = &dev->endpoints[i];
+            if (ep->enabled) {
+                sys_dnode_t *node;
+                SYS_DLIST_FOR_EACH_NODE(&ep->transfer_queue, node) {
+                    count++;
+                }
+            }
+        }
+        *active_transfers = count;
     }
     
     if (completed_transfers) {
-        *completed_transfers = dev->function_driver.stats.completed_transfers;
+        *completed_transfers = dev->transfer_count;
     }
     
     if (failed_transfers) {
-        *failed_transfers = dev->function_driver.stats.failed_transfers;
+        *failed_transfers = dev->error_count;
     }
     
     return 0;
@@ -294,7 +292,7 @@ int usb_function_driver_setup_control_transfer(struct usb_stack_device *dev,
                                               const struct usb_setup_packet *setup,
                                               uint8_t *data_buffer,
                                               size_t data_length,
-                                              usb_transfer_callback_t callback,
+                                              usb_stack_transfer_callback_t callback,
                                               void *user_data)
 {
     if (!dev || !setup) {
@@ -305,14 +303,18 @@ int usb_function_driver_setup_control_transfer(struct usb_stack_device *dev,
     LOG_DBG("Setting up control transfer: bmRequestType=0x%02x, bRequest=0x%02x, wValue=0x%04x, wIndex=0x%04x, wLength=%d",
             setup->bmRequestType, setup->bRequest, setup->wValue, setup->wIndex, setup->wLength);
     
+    /* Store setup packet */
+    memcpy(&dev->setup_packet, setup, sizeof(*setup));
+    dev->setup_count++;
+    
     /* Allocate transfer for data stage (if needed) */
     if (data_length > 0 && data_buffer) {
-        uint8_t ep_addr = (setup->bmRequestType & USB_DIR_IN) ? 0x80 : 0x00;
+        uint8_t ep_addr = (setup->bmRequestType & 0x80) ? 0x80 : 0x00;
         return usb_function_driver_submit_transfer(dev, ep_addr, data_buffer, data_length, callback, user_data);
     }
     
     /* Status stage only */
-    uint8_t status_ep = (setup->bmRequestType & USB_DIR_IN) ? 0x00 : 0x80;
+    uint8_t status_ep = (setup->bmRequestType & 0x80) ? 0x00 : 0x80;
     return usb_function_driver_submit_transfer(dev, status_ep, NULL, 0, callback, user_data);
 }
 
@@ -326,16 +328,19 @@ int usb_function_driver_stall_endpoint(struct usb_stack_device *dev, uint8_t ep_
         return -EINVAL;
     }
     
-    uint8_t ep_num = ep_addr & 0x0F;
-    if (ep_num >= USB_STACK_MAX_ENDPOINTS) {
-        LOG_ERR("Invalid endpoint number: %d", ep_num);
+    uint8_t ep_index = USB_STACK_EP_INDEX(ep_addr);
+    if (ep_index >= USB_STACK_MAX_ENDPOINTS * 2) {
+        LOG_ERR("Invalid endpoint index: %d", ep_index);
         return -EINVAL;
     }
     
-    LOG_DBG("Stalling endpoint %d", ep_num);
+    LOG_DBG("Stalling endpoint 0x%02x", ep_addr);
     
-    /* Stall in hardware */
-    return dwc3_controller_stall_endpoint(&dev->controller, ep_addr);
+    /* Mark endpoint as stalled */
+    dev->endpoints[ep_index].stalled = true;
+    
+    /* Stall using USB stack */
+    return usb_stack_stall_endpoint(dev, ep_addr);
 }
 
 /**
@@ -348,16 +353,19 @@ int usb_function_driver_clear_stall(struct usb_stack_device *dev, uint8_t ep_add
         return -EINVAL;
     }
     
-    uint8_t ep_num = ep_addr & 0x0F;
-    if (ep_num >= USB_STACK_MAX_ENDPOINTS) {
-        LOG_ERR("Invalid endpoint number: %d", ep_num);
+    uint8_t ep_index = USB_STACK_EP_INDEX(ep_addr);
+    if (ep_index >= USB_STACK_MAX_ENDPOINTS * 2) {
+        LOG_ERR("Invalid endpoint index: %d", ep_index);
         return -EINVAL;
     }
     
-    LOG_DBG("Clearing stall on endpoint %d", ep_num);
+    LOG_DBG("Clearing stall on endpoint 0x%02x", ep_addr);
     
-    /* Clear stall in hardware */
-    return dwc3_controller_clear_stall(&dev->controller, ep_addr);
+    /* Clear stall flag */
+    dev->endpoints[ep_index].stalled = false;
+    
+    /* Clear stall using USB stack */
+    return usb_stack_unstall_endpoint(dev, ep_addr);
 }
 
 /**
@@ -370,14 +378,14 @@ bool usb_function_driver_is_endpoint_stalled(struct usb_stack_device *dev, uint8
         return false;
     }
     
-    uint8_t ep_num = ep_addr & 0x0F;
-    if (ep_num >= USB_STACK_MAX_ENDPOINTS) {
-        LOG_ERR("Invalid endpoint number: %d", ep_num);
+    uint8_t ep_index = USB_STACK_EP_INDEX(ep_addr);
+    if (ep_index >= USB_STACK_MAX_ENDPOINTS * 2) {
+        LOG_ERR("Invalid endpoint index: %d", ep_index);
         return false;
     }
     
-    /* Check stall status in hardware */
-    return dwc3_controller_is_endpoint_stalled(&dev->controller, ep_addr);
+    /* Check stall status */
+    return dev->endpoints[ep_index].stalled;
 }
 
 /**
@@ -390,23 +398,27 @@ int usb_function_driver_flush_endpoint(struct usb_stack_device *dev, uint8_t ep_
         return -EINVAL;
     }
     
-    uint8_t ep_num = ep_addr & 0x0F;
-    if (ep_num >= USB_STACK_MAX_ENDPOINTS) {
-        LOG_ERR("Invalid endpoint number: %d", ep_num);
+    uint8_t ep_index = USB_STACK_EP_INDEX(ep_addr);
+    if (ep_index >= USB_STACK_MAX_ENDPOINTS * 2) {
+        LOG_ERR("Invalid endpoint index: %d", ep_index);
         return -EINVAL;
     }
     
-    LOG_DBG("Flushing endpoint %d", ep_num);
+    LOG_DBG("Flushing endpoint 0x%02x", ep_addr);
     
     /* Cancel all pending transfers for this endpoint */
-    sys_snode_t *node, *next;
-    SYS_SLIST_FOR_EACH_NODE_SAFE(&dev->function_driver.ep_transfer_queues[ep_num], node, next) {
-        struct usb_transfer *transfer = CONTAINER_OF(node, struct usb_transfer, node);
+    struct usb_stack_endpoint *ep = &dev->endpoints[ep_index];
+    k_mutex_lock(&ep->queue_mutex, K_FOREVER);
+    
+    sys_dnode_t *node, *next;
+    SYS_DLIST_FOR_EACH_NODE_SAFE(&ep->transfer_queue, node, next) {
+        struct usb_stack_transfer *transfer = CONTAINER_OF(node, struct usb_stack_transfer, node);
         usb_function_driver_cancel_transfer(dev, transfer);
     }
     
-    /* Flush in hardware */
-    return dwc3_controller_flush_endpoint(&dev->controller, ep_addr);
+    k_mutex_unlock(&ep->queue_mutex);
+    
+    return 0;
 }
 
 /**
@@ -419,17 +431,21 @@ int usb_function_driver_get_queue_depth(struct usb_stack_device *dev, uint8_t ep
         return -EINVAL;
     }
     
-    uint8_t ep_num = ep_addr & 0x0F;
-    if (ep_num >= USB_STACK_MAX_ENDPOINTS) {
-        LOG_ERR("Invalid endpoint number: %d", ep_num);
+    uint8_t ep_index = USB_STACK_EP_INDEX(ep_addr);
+    if (ep_index >= USB_STACK_MAX_ENDPOINTS * 2) {
+        LOG_ERR("Invalid endpoint index: %d", ep_index);
         return -EINVAL;
     }
     
     int depth = 0;
-    sys_snode_t *node;
-    SYS_SLIST_FOR_EACH_NODE(&dev->function_driver.ep_transfer_queues[ep_num], node) {
+    struct usb_stack_endpoint *ep = &dev->endpoints[ep_index];
+    
+    k_mutex_lock(&ep->queue_mutex, K_FOREVER);
+    sys_dnode_t *node;
+    SYS_DLIST_FOR_EACH_NODE(&ep->transfer_queue, node) {
         depth++;
     }
+    k_mutex_unlock(&ep->queue_mutex);
     
     return depth;
 }

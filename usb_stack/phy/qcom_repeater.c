@@ -13,6 +13,7 @@
 
 #include "../include/usb_stack.h"
 #include "../include/usb_stack_types.h"
+#include "qcom_phy_internal.h"
 
 LOG_MODULE_REGISTER(qcom_repeater, CONFIG_USB_STACK_LOG_LEVEL);
 

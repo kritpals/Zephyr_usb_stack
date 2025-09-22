@@ -14,6 +14,7 @@
 
 #include "../include/usb_stack.h"
 #include "qcom_phy_regs.h"
+#include "qcom_phy_internal.h"
 
 LOG_MODULE_REGISTER(qcom_phy, CONFIG_USB_STACK_LOG_LEVEL);
 
@@ -88,51 +89,6 @@ LOG_MODULE_REGISTER(qcom_phy, CONFIG_USB_STACK_LOG_LEVEL);
 #define QSERDES_COM_SAR_CODE_READY_STATUS 0x194
 #define QSERDES_COM_CMN_STATUS          0x1C0
 
-/* PHY Private Data */
-struct qcom_phy_data {
-    /* Base addresses */
-    uintptr_t qusb2_base;
-    uintptr_t qmp_base;
-    uintptr_t pcs_base;
-    
-    /* PHY type */
-    usb_stack_phy_type_t type;
-    
-    /* Power state */
-    bool powered;
-    bool initialized;
-    
-    /* Clocks and resets */
-    const struct device *clock_dev;
-    const struct device *reset_dev;
-    uint32_t clock_ids[8];
-    uint32_t reset_ids[4];
-    uint8_t num_clocks;
-    uint8_t num_resets;
-    
-    /* Tuning parameters */
-    struct qcom_phy_tune_param {
-        uint32_t offset;
-        uint32_t value;
-    } *tune_params;
-    uint32_t num_tune_params;
-};
-
-/* PHY Configuration */
-struct qcom_phy_config {
-    uintptr_t qusb2_base;
-    uintptr_t qmp_base;
-    uintptr_t pcs_base;
-    usb_stack_phy_type_t type;
-    const struct device *clock_dev;
-    const struct device *reset_dev;
-    uint32_t *clock_ids;
-    uint32_t *reset_ids;
-    uint8_t num_clocks;
-    uint8_t num_resets;
-    struct qcom_phy_tune_param *tune_params;
-    uint32_t num_tune_params;
-};
 
 /* Register access helpers */
 static inline uint32_t qcom_phy_readl(uintptr_t base, uint32_t offset)
@@ -455,7 +411,7 @@ static int qcom_phy_power_on(const struct device *dev)
     return 0;
 }
 
-static int qcom_phy_power_off(const struct device *dev)
+int qcom_phy_power_off(const struct device *dev)
 {
     struct qcom_phy_data *phy = dev->data;
     

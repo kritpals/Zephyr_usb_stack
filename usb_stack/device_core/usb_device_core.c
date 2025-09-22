@@ -27,24 +27,35 @@ int usb_device_core_init(struct usb_stack_device *dev)
     LOG_INF("Initializing USB device core");
     
     /* Initialize device core state */
-    dev->device_core.state = USB_DEVICE_STATE_DETACHED;
-    dev->device_core.configuration = 0;
-    dev->device_core.interface = 0;
-    dev->device_core.alternate_setting = 0;
+    dev->state = USB_STACK_STATE_DETACHED;
+    dev->configuration = 0;
+    dev->address = 0;
     
     /* Initialize endpoint management */
-    for (int i = 0; i < USB_STACK_MAX_ENDPOINTS; i++) {
-        dev->device_core.endpoints[i].enabled = false;
-        dev->device_core.endpoints[i].type = USB_ENDPOINT_TYPE_CONTROL;
-        dev->device_core.endpoints[i].max_packet_size = 0;
-        dev->device_core.endpoints[i].interval = 0;
+    for (int i = 0; i < USB_STACK_MAX_ENDPOINTS * 2; i++) {
+        dev->endpoints[i].enabled = false;
+        dev->endpoints[i].type = USB_STACK_EP_TYPE_CONTROL;
+        dev->endpoints[i].max_packet_size = 0;
+        dev->endpoints[i].interval = 0;
+        dev->endpoints[i].stalled = false;
+        sys_dlist_init(&dev->endpoints[i].transfer_queue);
+        k_mutex_init(&dev->endpoints[i].queue_mutex);
+        dev->endpoints[i].transfer_count = 0;
+        dev->endpoints[i].error_count = 0;
     }
     
     /* Setup control endpoint (EP0) */
-    dev->device_core.endpoints[0].enabled = true;
-    dev->device_core.endpoints[0].type = USB_ENDPOINT_TYPE_CONTROL;
-    dev->device_core.endpoints[0].max_packet_size = 64; /* Default for USB 2.0 */
-    dev->device_core.endpoints[0].interval = 0;
+    dev->endpoints[0].enabled = true;  /* EP0 OUT */
+    dev->endpoints[0].type = USB_STACK_EP_TYPE_CONTROL;
+    dev->endpoints[0].max_packet_size = 64; /* Default for USB 2.0 */
+    dev->endpoints[0].interval = 0;
+    dev->endpoints[0].address = 0x00;
+    
+    dev->endpoints[1].enabled = true;  /* EP0 IN */
+    dev->endpoints[1].type = USB_STACK_EP_TYPE_CONTROL;
+    dev->endpoints[1].max_packet_size = 64; /* Default for USB 2.0 */
+    dev->endpoints[1].interval = 0;
+    dev->endpoints[1].address = 0x80;
     
     LOG_DBG("USB device core initialized successfully");
     return 0;
@@ -62,8 +73,18 @@ int usb_device_core_deinit(struct usb_stack_device *dev)
     
     LOG_INF("Deinitializing USB device core");
     
-    /* Reset device core state */
-    memset(&dev->device_core, 0, sizeof(dev->device_core));
+    /* Reset device state */
+    dev->state = USB_STACK_STATE_DETACHED;
+    dev->configuration = 0;
+    dev->address = 0;
+    
+    /* Reset endpoints */
+    for (int i = 0; i < USB_STACK_MAX_ENDPOINTS * 2; i++) {
+        dev->endpoints[i].enabled = false;
+        dev->endpoints[i].stalled = false;
+        dev->endpoints[i].transfer_count = 0;
+        dev->endpoints[i].error_count = 0;
+    }
     
     LOG_DBG("USB device core deinitialized");
     return 0;
@@ -72,14 +93,14 @@ int usb_device_core_deinit(struct usb_stack_device *dev)
 /**
  * @brief Handle USB device state changes
  */
-int usb_device_core_set_state(struct usb_stack_device *dev, usb_device_state_t new_state)
+int usb_device_core_set_state(struct usb_stack_device *dev, usb_stack_device_state_t new_state)
 {
     if (!dev) {
         LOG_ERR("Invalid device pointer");
         return -EINVAL;
     }
     
-    usb_device_state_t old_state = dev->device_core.state;
+    usb_stack_device_state_t old_state = dev->state;
     
     if (old_state == new_state) {
         return 0; /* No change */
@@ -87,39 +108,38 @@ int usb_device_core_set_state(struct usb_stack_device *dev, usb_device_state_t n
     
     LOG_INF("USB device state change: %d -> %d", old_state, new_state);
     
-    dev->device_core.state = new_state;
+    dev->state = new_state;
     
     /* Handle state-specific actions */
     switch (new_state) {
-    case USB_DEVICE_STATE_DETACHED:
+    case USB_STACK_STATE_DETACHED:
         /* Reset configuration */
-        dev->device_core.configuration = 0;
-        dev->device_core.interface = 0;
-        dev->device_core.alternate_setting = 0;
+        dev->configuration = 0;
+        dev->address = 0;
         break;
         
-    case USB_DEVICE_STATE_ATTACHED:
+    case USB_STACK_STATE_ATTACHED:
         /* Device attached to host */
         break;
         
-    case USB_DEVICE_STATE_POWERED:
+    case USB_STACK_STATE_POWERED:
         /* Device powered by host */
         break;
         
-    case USB_DEVICE_STATE_DEFAULT:
+    case USB_STACK_STATE_DEFAULT:
         /* Device in default state after reset */
-        dev->device_core.configuration = 0;
+        dev->configuration = 0;
         break;
         
-    case USB_DEVICE_STATE_ADDRESS:
+    case USB_STACK_STATE_ADDRESS:
         /* Device address assigned */
         break;
         
-    case USB_DEVICE_STATE_CONFIGURED:
+    case USB_STACK_STATE_CONFIGURED:
         /* Device configured and ready */
         break;
         
-    case USB_DEVICE_STATE_SUSPENDED:
+    case USB_STACK_STATE_SUSPENDED:
         /* Device suspended */
         break;
         
@@ -134,14 +154,14 @@ int usb_device_core_set_state(struct usb_stack_device *dev, usb_device_state_t n
 /**
  * @brief Get current USB device state
  */
-usb_device_state_t usb_device_core_get_state(struct usb_stack_device *dev)
+usb_stack_device_state_t usb_device_core_get_state(struct usb_stack_device *dev)
 {
     if (!dev) {
         LOG_ERR("Invalid device pointer");
-        return USB_DEVICE_STATE_DETACHED;
+        return USB_STACK_STATE_DETACHED;
     }
     
-    return dev->device_core.state;
+    return dev->state;
 }
 
 /**
@@ -149,7 +169,7 @@ usb_device_state_t usb_device_core_get_state(struct usb_stack_device *dev)
  */
 int usb_device_core_configure_endpoint(struct usb_stack_device *dev, 
                                       uint8_t ep_addr,
-                                      usb_endpoint_type_t type,
+                                      usb_stack_ep_type_t type,
                                       uint16_t max_packet_size,
                                       uint8_t interval)
 {
@@ -158,24 +178,23 @@ int usb_device_core_configure_endpoint(struct usb_stack_device *dev,
         return -EINVAL;
     }
     
-    uint8_t ep_num = ep_addr & 0x0F;
-    bool is_in = (ep_addr & 0x80) != 0;
+    uint8_t ep_index = USB_STACK_EP_INDEX(ep_addr);
     
-    if (ep_num >= USB_STACK_MAX_ENDPOINTS) {
-        LOG_ERR("Invalid endpoint number: %d", ep_num);
+    if (ep_index >= USB_STACK_MAX_ENDPOINTS * 2) {
+        LOG_ERR("Invalid endpoint index: %d", ep_index);
         return -EINVAL;
     }
     
-    LOG_DBG("Configuring endpoint %d (%s): type=%d, mps=%d, interval=%d",
-            ep_num, is_in ? "IN" : "OUT", type, max_packet_size, interval);
+    LOG_DBG("Configuring endpoint 0x%02x: type=%d, mps=%d, interval=%d",
+            ep_addr, type, max_packet_size, interval);
     
-    struct usb_endpoint_info *ep = &dev->device_core.endpoints[ep_num];
+    struct usb_stack_endpoint *ep = &dev->endpoints[ep_index];
     
     ep->enabled = true;
     ep->type = type;
     ep->max_packet_size = max_packet_size;
     ep->interval = interval;
-    ep->is_in = is_in;
+    ep->address = ep_addr;
     
     return 0;
 }
@@ -190,10 +209,11 @@ int usb_device_core_deconfigure_endpoint(struct usb_stack_device *dev, uint8_t e
         return -EINVAL;
     }
     
-    uint8_t ep_num = ep_addr & 0x0F;
+    uint8_t ep_num = USB_STACK_EP_NUM(ep_addr);
+    uint8_t ep_index = USB_STACK_EP_INDEX(ep_addr);
     
-    if (ep_num >= USB_STACK_MAX_ENDPOINTS) {
-        LOG_ERR("Invalid endpoint number: %d", ep_num);
+    if (ep_index >= USB_STACK_MAX_ENDPOINTS * 2) {
+        LOG_ERR("Invalid endpoint index: %d", ep_index);
         return -EINVAL;
     }
     
@@ -202,9 +222,9 @@ int usb_device_core_deconfigure_endpoint(struct usb_stack_device *dev, uint8_t e
         return -EINVAL;
     }
     
-    LOG_DBG("Deconfiguring endpoint %d", ep_num);
+    LOG_DBG("Deconfiguring endpoint 0x%02x", ep_addr);
     
-    struct usb_endpoint_info *ep = &dev->device_core.endpoints[ep_num];
+    struct usb_stack_endpoint *ep = &dev->endpoints[ep_index];
     memset(ep, 0, sizeof(*ep));
     
     return 0;
@@ -213,22 +233,22 @@ int usb_device_core_deconfigure_endpoint(struct usb_stack_device *dev, uint8_t e
 /**
  * @brief Get endpoint information
  */
-const struct usb_endpoint_info *usb_device_core_get_endpoint_info(struct usb_stack_device *dev, 
-                                                                 uint8_t ep_addr)
+const struct usb_stack_endpoint *usb_device_core_get_endpoint_info(struct usb_stack_device *dev, 
+                                                                  uint8_t ep_addr)
 {
     if (!dev) {
         LOG_ERR("Invalid device pointer");
         return NULL;
     }
     
-    uint8_t ep_num = ep_addr & 0x0F;
+    uint8_t ep_index = USB_STACK_EP_INDEX(ep_addr);
     
-    if (ep_num >= USB_STACK_MAX_ENDPOINTS) {
-        LOG_ERR("Invalid endpoint number: %d", ep_num);
+    if (ep_index >= USB_STACK_MAX_ENDPOINTS * 2) {
+        LOG_ERR("Invalid endpoint index: %d", ep_index);
         return NULL;
     }
     
-    return &dev->device_core.endpoints[ep_num];
+    return &dev->endpoints[ep_index];
 }
 
 /**
@@ -243,12 +263,12 @@ int usb_device_core_set_configuration(struct usb_stack_device *dev, uint8_t conf
     
     LOG_INF("Setting USB device configuration: %d", config);
     
-    dev->device_core.configuration = config;
+    dev->configuration = config;
     
     if (config > 0) {
-        usb_device_core_set_state(dev, USB_DEVICE_STATE_CONFIGURED);
+        usb_device_core_set_state(dev, USB_STACK_STATE_CONFIGURED);
     } else {
-        usb_device_core_set_state(dev, USB_DEVICE_STATE_ADDRESS);
+        usb_device_core_set_state(dev, USB_STACK_STATE_ADDRESS);
     }
     
     return 0;
@@ -264,7 +284,7 @@ uint8_t usb_device_core_get_configuration(struct usb_stack_device *dev)
         return 0;
     }
     
-    return dev->device_core.configuration;
+    return dev->configuration;
 }
 
 /**
@@ -281,8 +301,8 @@ int usb_device_core_set_interface(struct usb_stack_device *dev,
     
     LOG_DBG("Setting interface %d alternate setting: %d", interface, alternate_setting);
     
-    dev->device_core.interface = interface;
-    dev->device_core.alternate_setting = alternate_setting;
+    /* Note: The USB stack structure doesn't have interface/alternate_setting fields
+     * This would typically be handled by the application layer */
     
     return 0;
 }
@@ -297,9 +317,8 @@ uint8_t usb_device_core_get_interface(struct usb_stack_device *dev, uint8_t inte
         return 0;
     }
     
-    if (interface == dev->device_core.interface) {
-        return dev->device_core.alternate_setting;
-    }
+    /* Note: The USB stack structure doesn't have interface/alternate_setting fields
+     * This would typically be handled by the application layer */
     
     return 0; /* Default alternate setting */
 }
@@ -317,16 +336,15 @@ int usb_device_core_handle_reset(struct usb_stack_device *dev)
     LOG_INF("Handling USB reset");
     
     /* Reset to default state */
-    usb_device_core_set_state(dev, USB_DEVICE_STATE_DEFAULT);
+    usb_device_core_set_state(dev, USB_STACK_STATE_DEFAULT);
     
     /* Reset configuration */
-    dev->device_core.configuration = 0;
-    dev->device_core.interface = 0;
-    dev->device_core.alternate_setting = 0;
+    dev->configuration = 0;
+    dev->address = 0;
     
     /* Reconfigure control endpoint */
-    usb_device_core_configure_endpoint(dev, 0x00, USB_ENDPOINT_TYPE_CONTROL, 64, 0);
-    usb_device_core_configure_endpoint(dev, 0x80, USB_ENDPOINT_TYPE_CONTROL, 64, 0);
+    usb_device_core_configure_endpoint(dev, 0x00, USB_STACK_EP_TYPE_CONTROL, 64, 0);
+    usb_device_core_configure_endpoint(dev, 0x80, USB_STACK_EP_TYPE_CONTROL, 64, 0);
     
     return 0;
 }
@@ -343,7 +361,7 @@ int usb_device_core_handle_suspend(struct usb_stack_device *dev)
     
     LOG_INF("Handling USB suspend");
     
-    usb_device_core_set_state(dev, USB_DEVICE_STATE_SUSPENDED);
+    usb_device_core_set_state(dev, USB_STACK_STATE_SUSPENDED);
     
     return 0;
 }
@@ -361,10 +379,10 @@ int usb_device_core_handle_resume(struct usb_stack_device *dev)
     LOG_INF("Handling USB resume");
     
     /* Restore previous state (before suspend) */
-    if (dev->device_core.configuration > 0) {
-        usb_device_core_set_state(dev, USB_DEVICE_STATE_CONFIGURED);
+    if (dev->configuration > 0) {
+        usb_device_core_set_state(dev, USB_STACK_STATE_CONFIGURED);
     } else {
-        usb_device_core_set_state(dev, USB_DEVICE_STATE_ADDRESS);
+        usb_device_core_set_state(dev, USB_STACK_STATE_ADDRESS);
     }
     
     return 0;
